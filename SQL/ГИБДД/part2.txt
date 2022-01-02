@@ -1,0 +1,448 @@
+
+/*6. Создать два индекса для заданных таблиц по заданным полям. Одно задание – один индекс. Название индекса должно начитаться с префикса
+”index_”:*/
+
+-- 6.1. Таблица: Владельцы. Атрибуты: ФИО
+
+CREATE INDEX index_owners ON "Владельцы" ("ФИО");
+
+SELECT "ФИО" FROM "Владельцы";
+
+-- 6.2. Таблица: Автомобили. Атрибуты: Номер_лицензии, Регистрационный_номер.
+
+CREATE INDEX index_cars ON "Автомобили" ("Номер лицензии", "Регистрационный номер");
+
+
+SELECT "Номер лицензии", "Регистрационный номер"
+FROM "Автомобили";
+
+/*
+7. Написать процедуры и функции, согласно условиям . Все процедуры и функции при необходимости должны включать обработчики исключений.
+Названия функций: F_<имя>. Формат названий процедур: P_<имя>. Написать анонимные блоки или запросы для проверки работы процедур и
+функций.
+
+7.1. Написать функцию, которая для заданной страховой компании возвращает количество автовладельцев имеющих действующие полисы
+(id_компании и промежуток времени – аргументы функции). Если промежуток времени не указан, считается количество за всё время./*
+
+
+CREATE OR REPLACE FUNCTION F_1(id_comp integer, date_from DATE = NULL, date_to DATE = NULL)
+RETURNS INTEGER as 
+$$ DECLARE
+count INTEGER;
+BEGIN
+IF id_comp = 0 THEN
+RAISE EXCEPTION 'Введен некорректный ID компании'; END IF;
+SELECT count(DISTINCT "Регистрационный номер") 
+INTO count
+FROM "Страховые полисы"
+WHERE "ID компании" = id_comp AND (date_from IS NULL OR to_char(date_from, 'YYYY-MM-DD') <= to_char("Дата начала", 'YYYY-MM-DD')) AND (date_to IS NULL OR to_char(date_to, 'YYYY-MM-DD') >= coalesce(to_char("Дата начала", 'YYYY-MM-DD'), '0001-01-01'));
+RETURN count; 
+END; $$
+LANGUAGE plpgsql;
+
+--ПРИМЕРЫ
+
+SELECT F_1(3);
+SELECT F_1(5);
+SELECT F_1(5, '2002-07-07', '2025-11-02');
+SELECT F_1(5, '1999-12-12', '2025-11-02');
+
+/* 
+7.2. Написать функцию, которая для каждой страховой компании возвращает среднюю длительность страхового периода в днях. Значение может
+рассчитываться за конкретный период и/или для конкретной марки автомобиля. Принадлежность страхового периода указному временному
+промежутку определяется по дате начала, бессрочные полисы в расчете не учитываются. Функция имеет три аргумента: id_копании, начало
+периода (с точностью до дня), окончание периода (с точность до дня). Только первый аргумент является обязательным. Предусмотреть вариант
+вызова функции без необязательных аргументов./*
+
+
+
+CREATE OR REPLACE FUNCTION F_2(id_comp integer, mark varchar = NULL, date_start DATE = NULL, date_end DATE = NULL)
+RETURNS INTEGER as 
+$$ DECLARE
+aver INTEGER;
+BEGIN
+SELECT avg("Страховые полисы"."Дата окончания"- "Страховые полисы"."Дата начала")
+INTO aver
+FROM "Страховые полисы"
+JOIN "Автомобили" ON "Страховые полисы"."Регистрационный номер" = "Автомобили"."Регистрационный номер"
+WHERE "ID компании" = id_comp AND((date_start IS NULL AND date_end IS NULL) OR (("Страховые полисы"."Дата начала" - date_start >=0) AND (date_end - "Страховые полисы"."Дата начала" >=0))) AND (mark IS NULL OR "Марка" = mark);
+
+
+RETURN aver;
+END; $$
+LANGUAGE plpgsql;
+
+
+--ПРИМЕРЫ
+
+SELECT F_2(5);
+SELECT F_2(5, 'BMW');
+SELECT F_2(1, 'Ford', '2000-01-21', '2099-06-17');
+SELECT F_2(1, 'Ford', '2003-01-15', '2099-06-17');
+SELECT F_2(5, date_start => '2000-01-01', date_end => '2099-06-17');
+SELECT F_2(5, date_start => '2011-01-01', date_end => '2099-06-17');
+
+/*7.3. Написать процедуру, которая формирует список автомобилистов с истёкшим сроком страхования в заданном округе регистрации (округ
+регистрации – аргумент процедуры). Обратите внимание, что на автомобиль может быть оформлено несколько полисов. Формат вывода:  
+
+------------------------------------------------------
+Список автовладельцев для проверки на <число>:
+1. <ФИО автовладельца 1>. Полис <номер полиса> на <марка> рег.номр <регистрационный номер> просрочен на <число> дня.
+<и т.д.>….
+------------------------------------------------------
+/*
+
+CREATE OR REPLACE PROCEDURE P_1(region varchar)
+as 
+$$ DECLARE
+overdue INTEGER;
+var1 VARCHAR;
+var2 VARCHAR;
+cars_cursor CURSOR FOR
+SELECT "ФИО"
+,"Страховые полисы"."Номер полиса"
+,"Марка"
+,"Страховые полисы"."Регистрационный номер"
+,"Дата начала"
+,"Дата окончания"
+FROM "Страховые полисы"
+	JOIN "Автомобили" ON "Автомобили"."Регистрационный номер" = "Страховые полисы"."Регистрационный номер"
+	JOIN "Владельцы" ON "Автомобили"."Номер лицензии" = "Владельцы"."Номер лицензии"
+WHERE LOWER(region) = LOWER("Округ регистрации");
+
+BEGIN
+IF region IS NULL THEN
+	RAISE EXCEPTION 'Введите округ регистрации'; RETURN; END IF;
+var1 := 'Список автовладельцев для проверки на ' || CURRENT_DATE;
+RAISE INFO '%', var1;
+FOR i IN cars_cursor LOOP
+
+IF (CURRENT_DATE-i."Дата окончания" >0) THEN
+var2 := i."ФИО" || '. Полис ' || i."Номер полиса" || ' на ' || i."Марка" || ' рег.номер ' || i."Регистрационный номер" || ' просрочен на ' || CURRENT_DATE-i."Дата окончания" || ' дней.';
+RAISE INFO '%', var2;
+END IF; END LOOP;
+END; $$
+LANGUAGE plpgsql; 
+
+--ПРИМЕРЫ
+
+CALL P_1('Кировская область'); -- регион, в котором есть одна просрочка
+CALL P_1('Воронежская область'); -- регион, в котором нет просрочек
+CALL P_1('Республика Коми'); -- вызов для региона, в котором есть бессрочный полис
+
+/* 7.4. Написать процедуру, которая выполняет копирование всех данных об указанной страховой компании, включая страховые полисы. Аргумент
+процедуры - id_компании. Для скопированной записи ставится отметка “копия” в поле название./*
+
+CREATE OR REPLACE PROCEDURE P_2(comp_id INTEGER)
+as
+$$ DECLARE
+id_valid INTEGER; 
+copy_comp_id INTEGER; 
+copy_police_id INTEGER;
+police_cursor CURSOR FOR
+	SELECT *
+	FROM "Страховые полисы"
+		WHERE comp_id = "Страховые полисы"."ID компании";
+	
+BEGIN
+SELECT COUNT(*)
+INTO ID_valid
+FROM "Страховые компании"
+WHERE "Страховые компании"."ID компании" = comp_id;
+
+SELECT MAX("Страховые компании"."ID компании") + 1
+INTO copy_comp_id
+FROM "Страховые компании";
+
+INSERT INTO "Страховые компании" ("ID компании", "Название", "Адрес", "Телефон") 
+SELECT copy_comp_id, "Страховые компании"."Название" || ' копия', "Страховые компании"."Адрес", "Страховые компании"."Телефон"
+FROM "Страховые компании"
+WHERE "Страховые компании"."ID компании" = comp_id;
+
+SELECT MAX("Номер полиса")
+INTO copy_police_id
+FROM "Страховые полисы";
+
+FOR i IN police_cursor LOOP
+copy_police_id = copy_police_id +1;
+INSERT INTO "Страховые полисы" ("Номер полиса", "ID компании", "Регистрационный номер", "Дата начала", "Дата окончания", "Тип страхования", "Сумма")
+VALUES (copy_police_id, copy_comp_id, i."Регистрационный номер", i."Дата начала", i."Дата окончания", i."Тип страхования", i."Сумма");
+END LOOP;
+
+END; $$
+LANGUAGE plpgsql;
+
+--ПРИМЕРЫ
+
+--SELECT * FROM "Страховые компании";
+--SELECT * FROM "Страховые полисы";
+
+CALL P_2(1);
+
+SELECT * FROM "Страховые компании";
+-- добавилась 7-я компания
+
+SELECT * FROM "Страховые полисы";
+-- добавились 11 и 12-й полисы, ранее принадлежавшие компании #1
+
+/* 7.5. Написать один или несколько сценариев (анонимных блока) демонстрирующий работу процедур и функций из пп. 1-4. 
+Требование:
+- Включение в запрос (для функций)
+- Для каждой процедуры не менее 3-х примеров работы с различными значениями аргументов.
+- Комментарии для каждого сценария описывающие суть примера и результат. /*
+
+
+
+/* 8. Создать триггеры, включить обработчики исключений. Написать скрипты для проверки. При необходимости снять ограничения (если
+ограничение мешает проверить работу триггера). 
+
+    8.1. Написать триггер, активизирующийся при изменении содержимого таблицы «Страховые_полисы» и проверяющий, чтобы дата начала была
+меньше даты окончания и поле «сумма» заполнялось автоматически в зависимости от типа страхования и объема двигателя, в соответствии с
+таблицей (таблицу задать самостоятельно ). /*
+
+
+CREATE TABLE tab
+(
+	Police_ID INTEGER,
+	Police_type  VARCHAR NOT NULL,
+	volume_id INTEGER NOT NULL,
+	DEFAULT_sum NUMERIC NOT NULL,
+    CONSTRAINT PK_tabl PRIMARY KEY (Police_ID)
+);
+
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(1, 'ОГПО', 1, 10000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(2, 'Freedom Start', 1, 15000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(3, 'КАСКО Express', 1, 20000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(4, 'КАСКО', 1, 25000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(5, 'АвтоКаско', 1, 30000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(6, 'Техассистанс', 1, 35000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(7, 'ОГПО', 2, 15000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(8, 'Freedom Start', 2, 20000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(9, 'КАСКО Express', 2, 25000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(10, 'КАСКО', 2, 30000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(11, 'АвтоКаско', 2, 35000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(12, 'Техассистанс', 2, 40000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(13, 'ОГПО', 3, 20000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(14, 'Freedom Start', 3, 25000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(15, 'КАСКО Express', 3, 30000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(16, 'КАСКО', 3, 35000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(17, 'АвтоКаско', 3, 40000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(18, 'Техассистанс', 3, 45000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(19, 'ОГПО', 4, 25000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(20, 'Freedom Start', 4, 30000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(21, 'КАСКО Express', 4, 35000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(22, 'КАСКО', 4, 40000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(23, 'АвтоКаско', 4, 45000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(24, 'Техассистанс', 4, 50000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(25, 'ОГПО', 5, 30000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(26, 'Freedom Start', 5, 35000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(27, 'КАСКО Express', 5, 40000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(28, 'КАСКО', 5, 45000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(29, 'АвтоКаско', 5, 50000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(30, 'Техассистанс', 5, 55000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(31, 'ОГПО', 6, 35000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(32, 'Freedom Start', 6, 40000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(33, 'КАСКО Express', 6, 45000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(34, 'КАСКО', 6, 50000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(35, 'АвтоКаско', 6, 55000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(36, 'Техассистанс', 6, 60000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(37, 'ОГПО', 7, 40000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(38, 'Freedom Start', 7, 45000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(39, 'КАСКО Express', 7, 50000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(40, 'КАСКО', 7, 55000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(41, 'АвтоКаско', 7, 60000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(42, 'Техассистанс', 7, 65000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(43, 'ОГПО', 8, 45000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(44, 'Freedom Start', 8, 50000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(45, 'КАСКО Express', 8, 55000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(46, 'КАСКО', 8, 60000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(47, 'АвтоКаско', 8, 65000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(48, 'Техассистанс', 8, 70000);
+
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(49, 'ОГПО', 9, 50000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(50, 'Freedom Start', 9, 55000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(51, 'КАСКО Express', 9, 60000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(52, 'КАСКО', 9, 65000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(53, 'АвтоКаско', 9, 70000);
+INSERT INTO tab(Police_ID, Police_type, volume_id, DEFAULT_sum) VALUES(54, 'Техассистанс', 9, 75000);
+
+CREATE OR REPLACE FUNCTION F_T_1()
+RETURNS TRIGGER as 
+$$ DECLARE
+new_volume NUMERIC = "Объем двигателя" FROM "Автомобили" 
+WHERE "Регистрационный номер" = NEW."Регистрационный номер";
+summa NUMERIC;
+vol_id INTEGER = CASE WHEN (new_volume <1.5) THEN 1 
+WHEN (new_volume >=1.5 AND new_volume <2) THEN 2
+WHEN (new_volume >=2 AND new_volume <2.5) THEN 3
+WHEN (new_volume >=2.5 AND new_volume <3) THEN 4
+WHEN (new_volume >=3 AND new_volume <3.5) THEN 5
+WHEN (new_volume >=3.5 AND new_volume <4) THEN 6
+WHEN (new_volume >=4 AND new_volume <4.5) THEN 7
+WHEN (new_volume >=4.5 AND new_volume <5) THEN 8
+WHEN (new_volume >=5) THEN 9
+END;
+BEGIN
+IF NEW."Дата начала" > NEW."Дата окончания" THEN 
+RAISE EXCEPTION 'Ошибка: Дата начала превышает дату окончания';
+	RETURN NULL; END IF;
+	SELECT DEFAULT_sum 
+	INTO summa FROM tab
+	WHERE tab.Police_type = NEW."Тип страхования" AND volume_id = vol_id;
+	NEW."Сумма" = summa;
+RETURN NEW;
+END; $$
+LANGUAGE plpgsql;
+
+
+CREATE TRIGGER T_1
+BEFORE
+UPDATE OR INSERT
+ON "Страховые полисы"
+FOR EACH ROW EXECUTE PROCEDURE F_T_1();
+
+
+--ПРИМЕРЫ
+
+UPDATE "Страховые полисы"
+SET "Дата окончания" = to_date('2002-05-09', 'YYYY-MM-DD')
+WHERE "Номер полиса" = 1; -- ошибка о дате
+
+INSERT INTO "Страховые полисы"("Номер полиса", "ID компании", "Регистрационный номер", "Дата начала", "Дата окончания", "Тип страхования", "Сумма") VALUES (13, 1, 2, to_date('2012-11-12', 'YYYY-MM-DD'), to_date('2022-11-12', 'YYYY-MM-DD'), 'ОГПО', 85000);
+
+INSERT INTO "Страховые полисы"("Номер полиса", "ID компании", "Регистрационный номер", "Дата начала", "Дата окончания", "Тип страхования", "Сумма") VALUES (14, 1, 3, to_date('2002-11-12', 'YYYY-MM-DD'), to_date('2022-11-12', 'YYYY-MM-DD'), 'ОГПО', 85000);
+
+SELECT * FROM "Страховые полисы";
+
+/* 8.2. Написать триггер, сохраняющий статистику изменений таблицы «Автомобили» в таблице «Авто_Статистика», в которой хранится дата
+изменения, тип изменения (insert, update, delete). Триггер также выводит на экран сообщение с указанием количества дней прошедших со дня
+последнего изменения /*
+
+CREATE TABLE "Авто_статистика"
+(
+	id INTEGER,
+	car_id INTEGER NOT NULL,
+	change_date DATE NOT NULL,
+	change_type varchar NOT NULL,
+	CONSTRAINT pk_pd_cars_change PRIMARY KEY (id)
+);
+
+CREATE OR REPLACE FUNCTION F_T_2()
+RETURNS TRIGGER as 
+$$ DECLARE
+last_id INTEGER;
+last_change_date DATE;
+change_type varchar;
+var varchar;
+BEGIN
+SELECT max("Авто_статистика".id), max("Авто_статистика".change_date)
+INTO last_id, last_change_date
+FROM "Авто_статистика";
+IF (TG_OP = 'INSERT') THEN change_type = 'insert';
+ELSIF (TG_OP = 'UPDATE') THEN change_type = 'update';
+ELSIF (TG_OP = 'DELETE') THEN change_type = 'delete';
+END IF;
+
+IF last_change_date IS NOT NULL THEN
+var := 'Дней с момента последнего изменения: ' || CURRENT_DATE - last_change_date;
+RAISE INFO '%', var;
+END IF;
+
+INSERT INTO "Авто_статистика" (id, car_id, change_date, change_type)
+VALUES (COALESCE(last_id + 1, 1), COALESCE(NEW."Регистрационный номер", OLD."Регистрационный номер"), CURRENT_TIMESTAMP, change_type);
+RETURN NEW; 
+END; $$
+LANGUAGE plpgsql;
+
+
+CREATE TRIGGER T_2_stat
+AFTER
+INSERT OR UPDATE OR DELETE
+ON "Автомобили"
+FOR EACH ROW EXECUTE PROCEDURE F_T_2();
+
+
+--ПРИМЕРЫ:
+
+INSERT INTO "Автомобили" ("Регистрационный номер", "Номер лицензии", "Марка", "Цвет", "Объем двигателя", "Дата тех. обслуживания", "Округ регистрации") VALUES (33,10, 'Bugatti', 'Жёлтый', 3.9, to_date('2013-02-02', 'YYYY-MM-DD'), 'Подмосковье');
+UPDATE "Автомобили" SET "Округ регистрации" = 'Крым' WHERE "Регистрационный номер" = 3;
+DELETE FROM "Автомобили" WHERE "Регистрационный номер" = 10;
+
+SELECT * FROM "Авто_статистика"
+
+
+
+/* 8.3. Написать триггер, активизирующийся при вставке в таблицу “Страховые компании ” и проверяющий наличие компании с указанным
+наименованием. Если такая компания уже существует, вместо вставки обновляются значения полей адрес и телефон /*
+
+CREATE OR REPLACE VIEW companies_view AS
+SELECT * FROM "Страховые компании";
+CREATE OR REPLACE FUNCTION F_T_3()
+RETURNS TRIGGER AS $$
+DECLARE
+	existing_company_ID INTEGER;
+BEGIN
+	SELECT MIN("Страховые компании"."ID компании")
+	INTO existing_company_ID
+	FROM "Страховые компании"
+	WHERE LOWER("Страховые компании"."Название") = LOWER(NEW."Название");
+
+	IF existing_company_ID IS NULL THEN
+		INSERT INTO "Страховые компании" ("ID компании", "Название", "Адрес", "Телефон")
+		VALUES (NEW."ID компании", NEW."Название", NEW."Адрес", NEW."Телефон");
+	ELSE
+		UPDATE "Страховые компании"
+		SET "Адрес" = NEW."Адрес"
+		WHERE "ID компании" = existing_company_ID;
+		UPDATE "Страховые компании"
+		SET "Телефон" = NEW."Телефон"
+		WHERE "ID компании" = existing_company_ID;
+	END IF;
+	RETURN NEW;
+END;$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER T_3
+INSTEAD OF
+INSERT
+ON companies_view
+FOR EACH ROW EXECUTE PROCEDURE F_T_3();
+
+--ПРИМЕРЫ:
+
+--отсутствующая ранее компания:
+INSERT INTO companies_view("ID компании", "Название", "Адрес", "Телефон") VALUES 
+(8, 'Lite', 'г.Киев, ул. Пушкина 66', '84829603849');
+
+--присутствующая ранее компания:
+INSERT INTO companies_view("ID компании", "Название", "Адрес", "Телефон") VALUES 
+(9, 'Тинькофф', 'г.Львов, ул. Пушкина 11', '82749385922');
+
+SELECT * FROM "Страховые компании";
+
+-------------------------------------------------------------------------------
+
+DROP FUNCTION F_1;
+DROP FUNCTION F_2;
+DROP PROCEDURE P_1;
+DROP PROCEDURE P_2;
+
+DROP TRIGGER T_1 ON "Страховые полисы";
+DROP FUNCTION F_T_1();
+DROP TABLE tab;
+
+DROP TRIGGER T_2_stat ON "Автомобили";
+DROP FUNCTION F_T_2();
+DROP TABLE "Авто_статистика";
+
+DROP TRIGGER T_3 ON companies_view;
+DROP FUNCTION F_T_3;
+DROP VIEW companies_view;
